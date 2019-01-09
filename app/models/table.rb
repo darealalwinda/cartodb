@@ -208,7 +208,8 @@ class Table
     if table_name =~ /\./
       table_name, schema = table_name.split('.').reverse
       # remove quotes from schema
-      [table_name, schema.gsub('"', '')]
+      schema = schema.delete('"')
+      [table_name, (schema if schema != 'public')]
     else
       [table_name, nil]
     end
@@ -454,13 +455,12 @@ class Table
 
   def remove_table_from_user_database
     owner.in_database(:as => :superuser) do |user_database|
-      begin
-        user_database.run("DROP SEQUENCE IF EXISTS cartodb_id_#{oid}_seq")
-      rescue => e
-        CartoDB::StdoutLogger.info 'Table#after_destroy error', "maybe table #{qualified_table_name} doesn't exist: #{e.inspect}"
+      user_database.transaction do
+        # Give up if it cannot get ExclusiveLocks for DDL operations in a reasonable time
+        user_database.run(%{SET LOCAL lock_timeout = '1s'})
+        Carto::OverviewsService.new(user_database).delete_overviews qualified_table_name
+        user_database.run(%{DROP TABLE IF EXISTS #{qualified_table_name}})
       end
-      Carto::OverviewsService.new(user_database).delete_overviews qualified_table_name
-      user_database.run(%{DROP TABLE IF EXISTS #{qualified_table_name}})
     end
   end
 
@@ -522,7 +522,7 @@ class Table
     first_columns     = []
     middle_columns    = []
     last_columns      = []
-    owner.in_database.schema(name, options.slice(:reload).merge(schema: owner.database_schema)).each do |column|
+    owner.in_database.schema(name, schema: owner.database_schema, reload: options.fetch(:reload, true)).each do |column|
       next if column[0] == THE_GEOM_WEBMERCATOR
 
       calculate_the_geom_type if column[0] == :the_geom
@@ -979,11 +979,15 @@ class Table
   end
 
   def update_table_pg_stats
-    owner.in_database[%Q{ANALYZE #{qualified_table_name};}]
+    # TODO: Reenable this with timeout/error handling.
+    # This was broken for years, and we reenabled it, imports timed out.
+    # owner.in_database.execute(%{ANALYZE #{qualified_table_name};})
   end
 
   def update_table_geom_pg_stats
-    owner.in_database[%Q{ANALYZE #{qualified_table_name}(the_geom);}]
+    # TODO: Reenable this with timeout/error handling.
+    # This was broken for years, and we reenabled it, imports timed out.
+    # owner.in_database.execute(%{ANALYZE #{qualified_table_name}(the_geom);})
   end
 
   def owner
@@ -1500,13 +1504,17 @@ class Table
     from_schema = self.owner.database_schema
     table_name = self.name
     to_role_user = organization_user.database_username
-    perform_cartodb_function(cartodb_pg_func, from_schema, table_name, to_role_user)
+    Carto::TableAndFriends.apply(owner.in_database, from_schema, table_name) do |schema, name|
+      perform_cartodb_function(cartodb_pg_func, schema, name, to_role_user)
+    end
   end
 
   def perform_organization_table_permission_change(cartodb_pg_func)
     from_schema = self.owner.database_schema
     table_name = self.name
-    perform_cartodb_function(cartodb_pg_func, from_schema, table_name)
+    Carto::TableAndFriends.apply(owner.in_database, from_schema, table_name) do |schema, name|
+      perform_cartodb_function(cartodb_pg_func, schema, name)
+    end
   end
 
   def perform_cartodb_function(cartodb_pg_func, *args)

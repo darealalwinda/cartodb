@@ -206,6 +206,9 @@ describe Admin::PagesController do
     end
 
     it 'extracts username from redirection for dashboard with subdomainless' do
+      # we use this to avoid generating the static assets in CI
+      Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
       username = 'endedwithu'
       anyuser = prepare_user(username)
       host! 'localhost.lan'
@@ -308,9 +311,11 @@ describe Admin::PagesController do
         document.child.child.text.should eq "\n"
       end
 
-      it 'returns public visualizations' do
+      it 'returns public and published visualizations' do
         private_attrs = { privacy: Carto::Visualization::PRIVACY_PRIVATE }
         create_full_visualization(@carto_org_user_1, visualization_attributes: private_attrs)
+        unpublished_attrs = { privacy: Carto::Visualization::PRIVACY_PUBLIC, version: 3 }
+        create_full_visualization(@carto_org_user_1, visualization_attributes: unpublished_attrs)
         public_attrs = { privacy: Carto::Visualization::PRIVACY_PUBLIC }
         _, _, _, visualization = create_full_visualization(@carto_org_user_1, visualization_attributes: public_attrs)
         get public_sitemap_url(user_domain: @carto_organization.name)
@@ -331,9 +336,11 @@ describe Admin::PagesController do
         host! "#{@carto_user1.username}.localhost.lan:#{Cartodb.config[:http_port]}"
       end
 
-      it 'returns public visualizations' do
+      it 'returns public and published visualizations' do
         private_attrs = { privacy: Carto::Visualization::PRIVACY_PRIVATE }
         create_full_visualization(@carto_user1, visualization_attributes: private_attrs)
+        unpublished_attrs = { privacy: Carto::Visualization::PRIVACY_PUBLIC, version: 3 }
+        create_full_visualization(@carto_user1, visualization_attributes: unpublished_attrs)
         public_attrs = { privacy: Carto::Visualization::PRIVACY_PUBLIC }
         _, _, _, visualization = create_full_visualization(@carto_user1, visualization_attributes: public_attrs)
         get public_sitemap_url(user_domain: @carto_user1.username)
@@ -372,6 +379,7 @@ describe Admin::PagesController do
     if org_user
       org = mock
       org.stubs(name: @org_name)
+      org.stubs(password_expiration_in_d: nil)
       user.stubs(organization: org)
       Organization.stubs(:where).with(name: @org_name).returns([org])
       Organization.stubs(:where).with(name: @org_user_name).returns([org])

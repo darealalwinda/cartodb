@@ -106,7 +106,14 @@ module CartoDB
         if post_import_handler.has_fix_geometries_task?
           job.log 'Fixing geometry...'
           # At this point the_geom column is renamed
-          GeometryFixer.new(job.db, job.table_name, SCHEMA, 'the_geom', job).run
+          begin
+            GeometryFixer.new(job.db, job.table_name, SCHEMA, 'the_geom', job).run
+          rescue StandardError => e
+            raise e unless statement_timeout?(e.to_s)
+            # Ignore timeouts in query batcher
+            CartoDB::Logger.warning(exception: e, message: 'Could not fix geometries during import')
+            job.log "Error fixing geometries during import, skipped (#{e.message})"
+          end
         end
       rescue => e
         raise CartoDB::Datasources::InvalidInputDataError.new(e.to_s, ERRORS_MAP[CartoDB::Datasources::InvalidInputDataError]) unless statement_timeout?(e.to_s)
@@ -150,6 +157,9 @@ module CartoDB
         end
         unless options[:quoted_fields_guessing].nil?
           ogr_options.merge!(quoted_fields_guessing: options[:quoted_fields_guessing])
+        end
+        unless options[:ogr2ogr_memory_limit].nil?
+          ogr_options.merge!(ogr2ogr_memory_limit: options[:ogr2ogr_memory_limit])
         end
 
         if source_file.extension == '.shp'
