@@ -58,14 +58,8 @@ module Carto
                     3
                   end
 
-        vizjson = if @redis_vizjson_cache
-                    @redis_vizjson_cache.cached(@visualization.id, https_request, version) do
-                      calculate_vizjson(https_request: https_request, forced_privacy_version: forced_privacy_version)
-                    end
-                  else
-                    calculate_vizjson(https_request: https_request, forced_privacy_version: forced_privacy_version)
-                  end
-
+        vizjson = calculate_vizjson(https_request: https_request, forced_privacy_version: forced_privacy_version)
+                  
         vizjson
       end
 
