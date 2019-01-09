@@ -2,19 +2,21 @@ var _ = require('underscore');
 var timer = require('grunt-timer');
 var semver = require('semver');
 var jasmineCfg = require('./lib/build/tasks/jasmine.js');
-var shrinkwrapDependencies = require('./lib/build/tasks/shrinkwrap-dependencies.js');
+var execSync = require('child_process').execSync;
+var lockedDependencies = require('./lib/build/tasks/locked-dependencies.js');
 var webpackTask = null;
+var EDITOR_ASSETS_VERSION = require('./config/editor_assets_version.json').version;
 
-var REQUIRED_NODE_VERSION = '6.9.2';
-var REQUIRED_NPM_VERSION = '3.10.9';
+var REQUIRED_NODE_VERSIONS = ['10.x', '6.9.2'];
+var REQUIRED_NPM_VERSIONS = ['6.x', '3.10.9'];
 
 var DEVELOPMENT = 'development';
 
-var SHRINKWRAP_MODULES_TO_VALIDATE = [
+var LOCKED_MODULES_TO_VALIDATE = [
   'backbone',
   'camshaft-reference',
   'carto',
-  '@carto/carto.js',
+  'internal-carto.js',
   'cartocolor',
   'd3',
   'jquery',
@@ -24,6 +26,12 @@ var SHRINKWRAP_MODULES_TO_VALIDATE = [
   'turbo-carto'
 ];
 
+// Synchronously check if editor assets have changed
+var diff = execSync('git diff --numstat $(git rev-list --tags --skip=1  --max-count=1) -- $(git symbolic-ref --short HEAD) config/editor_assets_version.json', {
+  cwd: __dirname
+});
+var EDITOR_ASSETS_CHANGED = diff.toString().length > 0;
+
 function requireWebpackTask () {
   if (webpackTask === null) {
     webpackTask = require('./lib/build/tasks/webpack/webpack.js');
@@ -31,10 +39,10 @@ function requireWebpackTask () {
   return webpackTask;
 }
 
-function logVersionsError (err, requiredNodeVersion, requiredNpmVersion) {
+function logVersionsError (err, requiredNodeVersions, requiredNpmVersions) {
   if (err) {
     grunt.log.fail('############### /!\\ CAUTION /!\\ #################');
-    grunt.log.fail('PLEASE installed required versions to build CARTO:\n- node: ' + requiredNodeVersion + '\n- node: ' + requiredNpmVersion);
+    grunt.log.fail('PLEASE installed required versions to build CARTO:\n- node: ' + requiredNodeVersions.join(', ') + '\n- npm: ' + requiredNpmVersions.join(', '));
     grunt.log.fail('#################################################');
     process.exit(1);
   }
@@ -69,17 +77,17 @@ module.exports = function (grunt) {
     grunt.log.writeln('Running tasks: ' + runningTasks);
   }
 
-  function preFlight (requiredNodeVersion, requiredNpmVersion, logFn) {
+  function preFlight (requiredNodeVersions, requiredNpmVersions, logFn) {
     function checkVersion (cmd, versionRange, name, logFn) {
-      grunt.log.writeln('Required ' + name + ' version: ' + versionRange);
+      grunt.log.writeln('Required ' + name + ' version: ' + versionRange.join(', '));
       require('child_process').exec(cmd, function (error, stdout, stderr) {
         var err = null;
         if (error) {
           err = 'failed to check version for ' + name;
         } else {
           var installed = semver.clean(stdout);
-          if (!semver.satisfies(installed, versionRange)) {
-            err = 'Installed ' + name + ' version does not match with required [' + versionRange + '] Installed: ' + installed;
+          if (!semver.satisfies(installed, versionRange.join(' || '))) {
+            err = 'Installed ' + name + ' version does not match with required [' + versionRange.join(', ') + '] Installed: ' + installed;
           }
         }
         if (err) {
@@ -88,17 +96,17 @@ module.exports = function (grunt) {
         logFn && logFn(err ? new Error(err) : null);
       });
     }
-    checkVersion('node -v', requiredNodeVersion, 'node', logFn);
-    checkVersion('npm -v', requiredNpmVersion, 'npm', logFn);
+    checkVersion('node -v', requiredNodeVersions, 'node', logFn);
+    checkVersion('npm -v', requiredNpmVersions, 'npm', logFn);
   }
 
   var mustCheckNodeVersion = grunt.option('no-node-checker');
   if (!mustCheckNodeVersion) {
-    preFlight(REQUIRED_NODE_VERSION, REQUIRED_NPM_VERSION, logVersionsError);
+    preFlight(REQUIRED_NODE_VERSIONS, REQUIRED_NPM_VERSIONS, logVersionsError);
     grunt.log.writeln('');
   }
 
-  var duplicatedModules = shrinkwrapDependencies.checkDuplicatedDependencies(require('./npm-shrinkwrap.json'), SHRINKWRAP_MODULES_TO_VALIDATE);
+  var duplicatedModules = lockedDependencies.checkDuplicatedDependencies(require('./npm-shrinkwrap.json'), LOCKED_MODULES_TO_VALIDATE);
   if (duplicatedModules.length > 0) {
     grunt.log.fail('############### /!\\ CAUTION /!\\ #################');
     grunt.log.fail('Duplicated dependencies found in npm-shrinkwrap.json file.');
@@ -107,8 +115,19 @@ module.exports = function (grunt) {
     process.exit(1);
   }
 
+  duplicatedModules = lockedDependencies.checkDuplicatedDependencies(require('./package-lock.json'), LOCKED_MODULES_TO_VALIDATE);
+  if (duplicatedModules.length > 0) {
+    grunt.log.fail('############### /!\\ CAUTION /!\\ #################');
+    grunt.log.fail('Duplicated dependencies found in package-lock.json file.');
+    grunt.log.fail(JSON.stringify(duplicatedModules, null, 4));
+    grunt.log.fail('#################################################');
+    process.exit(1);
+  }
+
+  var PUBLIC_DIR = './public/';
   var ROOT_ASSETS_DIR = './public/assets/';
   var ASSETS_DIR = './public/assets/<%= pkg.version %>';
+  var EDITOR_ASSETS_DIR = `./public/assets/editor/${EDITOR_ASSETS_VERSION}`;
 
   /**
    * this is being used by `grunt --environment=production release`
@@ -135,7 +154,10 @@ module.exports = function (grunt) {
     aws: aws,
     env: env,
 
+    public_dir: PUBLIC_DIR,
     assets_dir: ASSETS_DIR,
+    editor_assets_dir: EDITOR_ASSETS_DIR,
+    editor_assets_version: EDITOR_ASSETS_VERSION,
     root_assets_dir: ROOT_ASSETS_DIR,
 
     // Concat task
@@ -157,6 +179,9 @@ module.exports = function (grunt) {
     clean: require('./lib/build/tasks/clean').task(),
 
     jasmine: jasmineCfg,
+
+    // Create a tarball of the static pages for production release
+    compress: require('./lib/build/tasks/compress.js').task(),
 
     s3: require('./lib/build/tasks/s3.js').task(),
 
@@ -260,15 +285,11 @@ module.exports = function (grunt) {
     }
   });
 
-  // TODO: migrate mixins to postcss
   grunt.registerTask('css', [
     'copy:vendor',
     'copy:app',
     'copy:css_cartodb',
     'compass',
-    'copy:css_vendor_builder',
-    'copy:css_builder',
-    'copy:css_dashboard',
     'sass',
     'concat:css'
   ]);
@@ -311,45 +332,37 @@ module.exports = function (grunt) {
   ]);
 
   grunt.registerTask('beforeDefault', [
-    'clean',
     'config'
   ]);
 
-  grunt.registerTask('pre', [
+  grunt.registerTask('dev-editor', [
     'beforeDefault',
     'js_editor',
     'css',
     'manifest'
   ]);
 
-  registerCmdTask('npm-dev', {cmd: 'npm', args: ['run', 'dev']});
   registerCmdTask('npm-start', {cmd: 'npm', args: ['run', 'start']});
   registerCmdTask('npm-build', {cmd: 'npm', args: ['run', 'build']});
-  registerCmdTask('npm-build-dashboard', {cmd: 'npm', args: ['run', 'build:dashboard']});
   registerCmdTask('npm-build-static', {cmd: 'npm', args: ['run', 'build:static']});
   registerCmdTask('npm-carto-node', {cmd: 'npm', args: ['run', 'carto-node']});
-  registerCmdTask('npm-dashboard', {cmd: 'npm', args: ['run', 'dashboard']});
+  registerCmdTask('npm-build-dev', {cmd: 'npm', args: ['run', 'build:dev']});
 
   /**
    * `grunt dev`
    */
 
-  grunt.registerTask('dev', [
-    'npm-carto-node',
-    'pre',
-    'npm-start'
-  ]);
-
-  grunt.registerTask('dashboard', [
-    'beforeDefault',
-    'css',
-    'manifest',
-    'npm-dashboard'
+  grunt.registerTask('editor', [
+    'build-static',
+    'npm-build-dev',
+    'dev-editor',
+    'watch:css'
   ]);
 
   grunt.registerTask('default', [
-    'pre',
-    'npm-dev'
+    'build-static',
+    'npm-build-dev',
+    'dev-editor'
   ]);
 
   grunt.registerTask('lint', [
@@ -365,15 +378,19 @@ module.exports = function (grunt) {
     'uglify'
   ]);
 
-  grunt.registerTask('build', [
-    'npm-carto-node',
-    'pre',
+  // -- BUILD TASKS
+
+  grunt.registerTask('build', 'build editor, builder, dashboard and static pages', [
+    'build-editor',
+    'build-static',
+    'npm-build'
+  ]);
+
+  grunt.registerTask('build-editor', 'generate editor css and javasript files', [
+    'dev-editor',
     'copy:js',
     'exorcise',
-    'uglify',
-    'npm-build',
-    'build-static',
-    'npm-build-dashboard'
+    'uglify'
   ]);
 
   grunt.registerTask('build-static', 'generate static files and needed vendor scripts', [
@@ -387,8 +404,23 @@ module.exports = function (grunt) {
    */
   grunt.registerTask('release', [
     'check_release',
-    'build',
-    's3',
+    'build-static',
+    'npm-build',
+    'compress',
+    's3:js',
+    's3:css',
+    's3:images',
+    's3:fonts',
+    's3:flash',
+    's3:favicons',
+    's3:unversioned',
+    's3:static_pages',
+    'invalidate'
+  ]);
+
+  grunt.registerTask('release_editor_assets', 'builds & uploads editor assets', [
+    'build-editor',
+    's3:frozen',
     'invalidate'
   ]);
 
@@ -416,14 +448,9 @@ module.exports = function (grunt) {
     requireWebpackTask().compile.call(this, 'dashboard_specs');
   });
 
-  /**
-   * `grunt test`
-   */
-  grunt.registerTask('test', '(CI env) Re-build JS files and run all tests. For manual testing use `grunt jasmine` directly', [
+  var testTasks = [
     'connect:test',
     'beforeDefault',
-    'js_editor',
-    'jasmine:cartodbui',
     'generate_builder_specs',
     'bootstrap_webpack_builder_specs',
     'webpack:builder_specs',
@@ -433,7 +460,17 @@ module.exports = function (grunt) {
     'webpack:dashboard_specs',
     'jasmine:dashboard',
     'lint'
-  ]);
+  ];
+
+  // If the editor assets version has changed, add the editor tests
+  if (EDITOR_ASSETS_CHANGED) {
+    testTasks.splice(testTasks.indexOf('generate_builder_specs'), 0, 'js_editor', 'jasmine:cartodbui');
+  }
+
+  /**
+   * `grunt test`
+   */
+  grunt.registerTask('test', '(CI env) Re-build JS files and run all tests. For manual testing use `grunt jasmine` directly', testTasks);
 
   /**
    * `grunt test:browser` compile all Builder specs and launch a webpage in the browser.

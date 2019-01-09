@@ -78,3 +78,6 @@ app/controllers/carto/api/vizjson3_presenter.rb
 config/environments/production.rb
 lib/assets/javascripts/cdb
 scripts/resque
+public/static.tar.gz
+compilation-stats.json
+npm-debug.log.*

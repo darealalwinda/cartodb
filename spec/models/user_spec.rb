@@ -359,15 +359,18 @@ describe User do
       end
     end
 
-    it 'should inherit twitter_datasource_enabled from organization on creation' do
+    it 'should inherit twitter_datasource_enabled from organizations with custom config on creation' do
       organization = create_organization_with_users(twitter_datasource_enabled: true)
       organization.save
       organization.twitter_datasource_enabled.should be_true
       organization.users.reject(&:organization_owner?).each do |u|
+        CartoDB::Datasources::DatasourcesFactory.stubs(:customized_config?).with(Search::Twitter::DATASOURCE_NAME, u).returns(true)
         u.twitter_datasource_enabled.should be_true
       end
+      CartoDB::Datasources::DatasourcesFactory.stubs(:customized_config?).returns(true)
       user = create_user(organization: organization)
       user.save
+      CartoDB::Datasources::DatasourcesFactory.stubs(:customized_config?).with(Search::Twitter::DATASOURCE_NAME, user).returns(true)
       user.twitter_datasource_enabled.should be_true
       organization.destroy
     end
@@ -400,7 +403,7 @@ describe User do
   it 'should store feature flags' do
     ff = FactoryGirl.create(:feature_flag, id: 10001, name: 'ff10001')
 
-    user = create_user :email => 'ff@example.com', :username => 'ff-user-01', :password => 'ff-user-01'
+    user = create_user email: 'ff@example.com', username: 'ff-user-01', password: '000ff-user-01'
     user.set_relationships_from_central({ feature_flags: [ ff.id.to_s ]})
     user.save
     user.feature_flags_user.map { |ffu| ffu.feature_flag_id }.should include(ff.id)
@@ -410,7 +413,7 @@ describe User do
   it 'should delete feature flags assignations to a deleted user' do
     ff = FactoryGirl.create(:feature_flag, id: 10002, name: 'ff10002')
 
-    user = create_user :email => 'ff2@example.com', :username => 'ff2-user-01', :password => 'ff2-user-01'
+    user = create_user email: 'ff2@example.com', username: 'ff2-user-01', password: '000ff2-user-01'
     user.set_relationships_from_central({ feature_flags: [ ff.id.to_s ]})
     user.save
     user_id = user.id
@@ -455,24 +458,6 @@ describe User do
     user.destroy
   end
 
-  it "should validate job_role and deprecated_job_roles" do
-    user = ::User.new
-    user.username = "adminipop"
-    user.email = "adminipop@example.com"
-    user.password = 'admin123'
-    user.password_confirmation = 'admin123'
-
-    user.job_role = "Developer"
-    user.valid?.should be_true
-
-    user.job_role = "Researcher"
-    user.valid?.should be_true
-
-    user.job_role = "whatever"
-    user.valid?.should be_false
-    user.errors[:job_role].should be_present
-  end
-
   it "should validate password presence and length" do
     user = ::User.new
     user.username = "adminipop"
@@ -486,6 +471,26 @@ describe User do
     user.errors[:password].should be_present
 
     user.password = 'manolo' * 11
+    user.valid?.should be_false
+    user.errors[:password].should be_present
+  end
+
+  it "should validate password is different than username" do
+    user = ::User.new
+    user.username = "adminipop"
+    user.email = "adminipop@example.com"
+    user.password = user.password_confirmation = "adminipop"
+
+    user.valid?.should be_false
+    user.errors[:password].should be_present
+  end
+
+  it "should validate password is not a common one" do
+    user = ::User.new
+    user.username = "adminipop"
+    user.email = "adminipop@example.com"
+    user.password = user.password_confirmation = '123456'
+
     user.valid?.should be_false
     user.errors[:password].should be_present
   end
@@ -650,19 +655,27 @@ describe User do
 
   describe '#private_maps_enabled?' do
     it 'should not have private maps enabled by default' do
-      user_missing_private_maps = create_user :email => 'user_mpm@example.com',  :username => 'usermpm',  :password => 'usermpm'
+      user_missing_private_maps = create_user email: 'user_mpm@example.com',
+                                              username: 'usermpm',
+                                              password: '000usermpm'
       user_missing_private_maps.private_maps_enabled?.should eq false
       user_missing_private_maps.destroy
     end
 
     it 'should have private maps if enabled' do
-      user_with_private_maps = create_user :email => 'user_wpm@example.com',  :username => 'userwpm',  :password => 'userwpm', :private_maps_enabled => true
+      user_with_private_maps = create_user email: 'user_wpm@example.com',
+                                           username: 'userwpm',
+                                           password: '000userwpm',
+                                           private_maps_enabled: true
       user_with_private_maps.private_maps_enabled?.should eq true
       user_with_private_maps.destroy
     end
 
     it 'should not have private maps if disabled' do
-      user_without_private_maps = create_user :email => 'user_opm@example.com',  :username => 'useropm',  :password => 'useropm', :private_maps_enabled => false
+      user_without_private_maps = create_user email: 'user_opm@example.com',
+                                              username: 'useropm',
+                                              password: '000useropm',
+                                              private_maps_enabled: false
       user_without_private_maps.private_maps_enabled?.should eq false
       user_without_private_maps.destroy
     end
@@ -1229,7 +1242,7 @@ describe User do
 
   it "should invalidate its Varnish cache after deletion" do
     doomed_user = create_user :email => 'doomed2@example.com', :username => 'doomed2', :password => 'doomed123'
-    CartoDB::Varnish.any_instance.expects(:purge).with("#{doomed_user.database_name}.*").returns(true)
+    CartoDB::Varnish.any_instance.expects(:purge).with("#{doomed_user.database_name}.*").at_least(2).returns(true)
 
     doomed_user.destroy
   end
@@ -1243,6 +1256,7 @@ describe User do
 
     CartoDB::Varnish.any_instance.expects(:purge)
                     .with("#{doomed_user.database_name}.*")
+                    .at_least(1)
                     .returns(true)
     CartoDB::Varnish.any_instance.expects(:purge)
                     .with(".*#{uuid}:vizjson")
@@ -1621,6 +1635,44 @@ describe User do
             @org_user_owner.in_database["SELECT 1 FROM pg_roles WHERE rolname = '#{api_key.db_role}'"].first
           ).to be_nil
         end
+
+        it 'deletes client_application and friends' do
+          user = create_user(email: 'clientapp@example.com', username: 'clientapp', password: @user_password)
+
+          user.create_client_application
+          user.client_application.access_tokens << ::AccessToken.new(
+            token: "access_token",
+            secret: "access_secret",
+            callback_url: "http://callback2",
+            verifier: "v2",
+            scope: nil,
+            client_application_id: user.client_application.id
+          ).save
+
+          user.client_application.oauth_tokens << ::OauthToken.new(
+            token: "oauth_token",
+            secret: "oauth_secret",
+            callback_url: "http//callback.com",
+            verifier: "v1",
+            scope: nil,
+            client_application_id: user.client_application.id
+          ).save
+
+          base_key = "rails:oauth_access_tokens:#{user.client_application.access_tokens.first.token}"
+
+          client_application = ClientApplication.where(user_id: user.id).first
+          expect(ClientApplication.where(user_id: user.id).count).to eq 2
+          expect(client_application.tokens).to_not be_empty
+          expect(client_application.tokens.length).to eq 2
+          $api_credentials.keys.should include(base_key)
+
+          user.destroy
+
+          expect(ClientApplication.where(user_id: user.id).first).to be_nil
+          expect(AccessToken.where(user_id: user.id).first).to be_nil
+          expect(OauthToken.where(user_id: user.id).first).to be_nil
+          $api_credentials.keys.should_not include(base_key)
+        end
       end
     end
   end
@@ -1765,7 +1817,7 @@ describe User do
   end
 
   it "Tests password change" do
-    new_valid_password = '123456'
+    new_valid_password = '000123456'
 
     old_crypted_password = @user.crypted_password
 
@@ -1775,14 +1827,14 @@ describe User do
     @user.errors.fetch(:old_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid") # "to_s" of validation msg
+    }.to raise_exception(Sequel::ValidationFailed, /old_password Old password not valid/) # "to_s" of validation msg
 
     @user.change_password(@user_password, 'aaabbb', 'bbbaaa')
     @user.valid?.should eq false
     @user.errors.fetch(:new_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "new_password New password doesn't match confirmation")
+    }.to raise_exception(Sequel::ValidationFailed, "new_password doesn't match confirmation")
 
     @user.change_password('aaaaaa', 'aaabbb', 'bbbaaa')
     @user.valid?.should eq false
@@ -1790,14 +1842,14 @@ describe User do
     @user.errors.fetch(:new_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password New password doesn't match confirmation")
+    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password doesn't match confirmation")
 
     @user.change_password(@user_password, 'tiny', 'tiny')
     @user.valid?.should eq false
     @user.errors.fetch(:new_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "new_password Must be at least 6 characters long")
+    }.to raise_exception(Sequel::ValidationFailed, "new_password must be at least 6 characters long")
 
     long_password = 'long' * 20
     @user.change_password(@user_password, long_password, long_password)
@@ -1805,28 +1857,28 @@ describe User do
     @user.errors.fetch(:new_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "new_password Must be at most 64 characters long")
+    }.to raise_exception(Sequel::ValidationFailed, "new_password must be at most 64 characters long")
 
     @user.change_password('aaaaaa', nil, nil)
     @user.valid?.should eq false
     @user.errors.fetch(:old_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password New password can't be blank")
+    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password can't be blank")
 
     @user.change_password(@user_password, nil, nil)
     @user.valid?.should eq false
     @user.errors.fetch(:new_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "new_password New password can't be blank")
+    }.to raise_exception(Sequel::ValidationFailed, "new_password can't be blank")
 
     @user.change_password(nil, nil, nil)
     @user.valid?.should eq false
     @user.errors.fetch(:old_password).nil?.should eq false
     expect {
       @user.save(raise_on_failure: true)
-    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password New password can't be blank")
+    }.to raise_exception(Sequel::ValidationFailed, "old_password Old password not valid, new_password can't be blank")
 
     @user.change_password(nil, new_valid_password, new_valid_password)
     @user.valid?.should eq false
@@ -1848,6 +1900,11 @@ describe User do
     @user.save
 
     @user.crypted_password.should eq old_crypted_password
+
+    last_password_change_date = @user.last_password_change_date
+    @user.change_password(@user_password, @user_password, @user_password)
+    @user.save
+    @user.last_password_change_date.should eq last_password_change_date
   end
 
   describe "when user is signed up with google sign-in and don't have any password yet" do
@@ -1858,7 +1915,7 @@ describe User do
 
       @user.needs_password_confirmation?.should == false
 
-      new_valid_password = '123456'
+      new_valid_password = '000123456'
       @user.change_password("doesn't matter in this case", new_valid_password, new_valid_password)
 
       @user.needs_password_confirmation?.should == true
@@ -2603,30 +2660,21 @@ describe User do
 
   describe 'api keys' do
     before(:all) do
-      @auth_api_feature_flag = FactoryGirl.create(:feature_flag, name: 'auth_api', restricted: false)
       @auth_api_user = FactoryGirl.create(:valid_user)
     end
 
     after(:all) do
-      @auth_api_feature_flag.destroy
       @auth_api_user.destroy
     end
 
     describe 'create api keys on user creation' do
-      it "creates master api key on user creation if ff auth_api is enabled for the user" do
+      it "creates master api key on user creation" do
         api_keys = Carto::ApiKey.where(user_id: @auth_api_user.id)
         api_keys.should_not be_empty
 
         master_api_key = Carto::ApiKey.where(user_id: @auth_api_user.id).master.first
         master_api_key.should be
         master_api_key.token.should eq @auth_api_user.api_key
-      end
-
-      it "does not create master api key on user creation if ff auth_api is not enabled for the user" do
-        user = FactoryGirl.create(:valid_user)
-        api_keys = Carto::ApiKey.where(user_id: @user.id)
-        api_keys.should be_empty
-        user.destroy
       end
     end
 
@@ -2725,7 +2773,7 @@ describe User do
       uo.promote_user_to_admin
       @organization.reload
       @user_org = FactoryGirl.build(:user, account_type: 'FREE')
-      @user_org.organization_id = @organization.id
+      @user_org.organization = @organization
       @user_org.enabled = true
       @user_org.save
 
@@ -2854,23 +2902,35 @@ describe User do
   end
 
   describe '#password_expired?' do
+    before(:all) do
+      @organization_password = create_organization_with_owner
+    end
+
+    after(:all) do
+      @organization_password.destroy
+    end
+
     before(:each) do
       @github_user = FactoryGirl.build(:valid_user, github_user_id: 932847)
       @google_user = FactoryGirl.build(:valid_user, google_sign_in: true)
       @password_user = FactoryGirl.build(:valid_user)
+      @org_user = FactoryGirl.create(:valid_user,
+                                     account_type: 'ORGANIZATION USER',
+                                     organization: @organization_password)
     end
 
     it 'never expires without configuration' do
-      Cartodb.with_config(passwords: { 'expiration_in_s' => nil }) do
+      Cartodb.with_config(passwords: { 'expiration_in_d' => nil }) do
         expect(@github_user.password_expired?).to be_false
         expect(@google_user.password_expired?).to be_false
         expect(@password_user.password_expired?).to be_false
+        expect(@org_user.password_expired?).to be_false
       end
     end
 
     it 'never expires for users without password' do
-      Cartodb.with_config(passwords: { 'expiration_in_s' => 5 }) do
-        Delorean.jump(10.seconds)
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        Delorean.jump(10.days)
         expect(@github_user.password_expired?).to be_false
         expect(@google_user.password_expired?).to be_false
         Delorean.back_to_the_present
@@ -2878,28 +2938,66 @@ describe User do
     end
 
     it 'expires for users with oauth and changed passwords' do
-      Cartodb.with_config(passwords: { 'expiration_in_s' => 5 }) do
-        @github_user.last_password_change_date = Time.now - 10.seconds
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        @github_user.last_password_change_date = Time.now - 10.days
         expect(@github_user.password_expired?).to be_true
-        @google_user.last_password_change_date = Time.now - 10.seconds
+        @google_user.last_password_change_date = Time.now - 10.days
         expect(@google_user.password_expired?).to be_true
       end
     end
 
     it 'expires for password users after a while has passed' do
       @password_user.save
-      Cartodb.with_config(passwords: { 'expiration_in_s' => 15 }) do
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 15 }) do
         expect(@password_user.password_expired?).to be_false
-        Delorean.jump(30.seconds)
+        Delorean.jump(30.days)
         expect(@password_user.password_expired?).to be_true
         @password_user.password = @password_user.password_confirmation = 'waduspass'
         @password_user.save
         expect(@password_user.password_expired?).to be_false
-        Delorean.jump(30.seconds)
+        Delorean.jump(30.days)
         expect(@password_user.password_expired?).to be_true
         Delorean.back_to_the_present
       end
       @password_user.destroy
+    end
+
+    it 'expires for org users with password_expiration set' do
+      @organization_password.stubs(:password_expiration_in_d).returns(2)
+      org_user2 = FactoryGirl.create(:valid_user,
+                                     account_type: 'ORGANIZATION USER',
+                                     organization: @organization_password)
+
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(1.day)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(5.days)
+        expect(org_user2.password_expired?).to be_true
+        org_user2.password = org_user2.password_confirmation = 'waduspass'
+        org_user2.save
+        Delorean.jump(1.day)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(5.day)
+        expect(org_user2.password_expired?).to be_true
+        Delorean.back_to_the_present
+      end
+    end
+
+    it 'never expires for org users with no password_expiration set' do
+      @organization_password.stubs(:password_expiration_in_d).returns(nil)
+      org_user2 = FactoryGirl.create(:valid_user, organization: @organization_password)
+
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(10.days)
+        expect(org_user2.password_expired?).to be_false
+        org_user2.password = org_user2.password_confirmation = 'waduspass'
+        org_user2.save
+        Delorean.jump(10.days)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.back_to_the_present
+      end
     end
   end
 

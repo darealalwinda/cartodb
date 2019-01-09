@@ -449,105 +449,6 @@ describe Organization do
     end
   end
 
-  describe '#org_shared_vis' do
-    it "checks fetching all shared visualizations of an organization's members " do
-      bypass_named_maps
-
-      # Don't check/handle DB permissions
-      Permission.any_instance.stubs(:revoke_previous_permissions).returns(nil)
-      Permission.any_instance.stubs(:grant_db_permission).returns(nil)
-
-      vis_1_name = 'viz_1'
-      vis_2_name = 'viz_2'
-      vis_3_name = 'viz_3'
-
-      user1 = create_user(:quota_in_bytes => 1234567890, :table_quota => 5)
-      user2 = create_user(:quota_in_bytes => 1234567890, :table_quota => 5)
-      user3 = create_user(:quota_in_bytes => 1234567890, :table_quota => 5)
-
-      organization = Organization.new
-      organization.name = 'qwerty'
-      organization.seats = 5
-      organization.quota_in_bytes = 1234567890
-      organization.save.reload
-      user1.organization_id = organization.id
-      user1.save.reload
-      organization.owner_id = user1.id
-      organization.save.reload
-      user2.organization_id = organization.id
-      user2.save.reload
-      user3.organization_id = organization.id
-      user3.save.reload
-
-      vis1 = Visualization::Member.new(random_attributes(name: vis_1_name, user_id: user1.id)).store
-      vis2 = Visualization::Member.new(random_attributes(name: vis_2_name, user_id: user2.id)).store
-      vis3 = Visualization::Member.new(random_attributes(name: vis_3_name, user_id: user3.id)).store
-
-      perm = vis1.permission
-      perm.acl = [
-          {
-              type: Permission::TYPE_ORGANIZATION,
-              entity: {
-                  id:       organization.id,
-                  username: organization.name
-              },
-              access: Permission::ACCESS_READONLY
-          }
-      ]
-      perm.save
-
-      perm = vis2.permission
-      perm.acl = [
-          {
-              type: Permission::TYPE_ORGANIZATION,
-              entity: {
-                  id:       organization.id,
-                  username: organization.name
-              },
-              access: Permission::ACCESS_READONLY
-          }
-      ]
-      perm.save
-
-      perm = vis3.permission
-      perm.acl = [
-          {
-              type: Permission::TYPE_ORGANIZATION,
-              entity: {
-                  id:       organization.id,
-                  username: organization.name
-              },
-              access: Permission::ACCESS_READONLY
-          }
-      ]
-      perm.save
-
-      # Setup done, now to the proper test
-
-      org_vis_array = organization.public_visualizations.map { |vis|
-        vis.id
-      }
-      # Order is newest to oldest
-      org_vis_array.should eq [vis3.id, vis2.id, vis1.id]
-
-      # Clear first shared entities to be able to destroy
-      vis1.permission.acl = []
-      vis1.permission.save
-      vis2.permission.acl = []
-      vis2.permission.save
-      vis3.permission.acl = []
-      vis3.permission.save
-
-      begin
-        user3.destroy
-        user2.destroy
-        user1.destroy
-      rescue
-        # TODO: Finish deletion of organization users and remove this so users are properly deleted or test fails
-      end
-    end
-  end
-
   describe "#get_api_calls and #get_geocodings" do
     before(:each) do
       @organization = create_organization_with_users(name: 'overquota-org')
@@ -707,6 +608,74 @@ describe Organization do
       Organization.overquota.map(&:id).should include(@organization.id)
       Organization.overquota.size.should == Organization.count
     end
+  end
+
+  it 'should validate password_expiration_in_d' do
+    organization = FactoryGirl.create(:organization)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should_not be
+
+    # minimum 1 day
+    organization = FactoryGirl.create(:organization, password_expiration_in_d: 1)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should eq 1
+
+    expect {
+      organization = FactoryGirl.create(:organization, password_expiration_in_d: 0)
+    }.to raise_error(Sequel::ValidationFailed, /password_expiration_in_d must be greater than 0 and lower than 366/)
+
+    # maximum 1 year
+    organization = FactoryGirl.create(:organization, password_expiration_in_d: 365)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should eq 365
+
+    expect {
+      organization = FactoryGirl.create(:organization, password_expiration_in_d: 366)
+    }.to raise_error(Sequel::ValidationFailed, /password_expiration_in_d must be greater than 0 and lower than 366/)
+
+    # nil or blank means unlimited
+    organization = FactoryGirl.create(:organization, password_expiration_in_d: nil)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should_not be
+
+    organization = FactoryGirl.create(:organization, password_expiration_in_d: '')
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should_not be
+
+    # defaults to global config if no value
+    organization = FactoryGirl.build(:organization, password_expiration_in_d: 1)
+    organization.valid?.should be_true
+    organization.save
+
+    organization = Carto::Organization.find(organization.id)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should eq 1
+
+    organization.password_expiration_in_d = nil
+    organization.valid?.should be_true
+    organization.save
+    organization = Carto::Organization.find(organization.id)
+    organization.password_expiration_in_d.should_not be
+
+    # override default config if a value is set
+    organization = FactoryGirl.create(:organization, password_expiration_in_d: 10)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should eq 10
+
+    # keep values configured
+    organization = Carto::Organization.find(organization.id)
+    organization.valid?.should be_true
+    organization.password_expiration_in_d.should eq 10
+  end
+
+  it 'should handle redis keys properly' do
+    @organization = create_organization_with_users(name: 'overquota-org')
+
+    $users_metadata.hkeys(@organization.key).should_not be_empty
+
+    @organization.destroy
+
+    $users_metadata.hkeys(@organization.key).should be_empty
   end
 
   def random_attributes(attributes = {})

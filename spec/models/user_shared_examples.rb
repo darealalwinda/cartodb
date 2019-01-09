@@ -26,30 +26,66 @@ shared_examples_for "user models" do
   describe 'twitter_datasource_enabled for org users' do
     include_context 'organization with users helper'
 
-    it 'is enabled if organization has it enabled, no matter whether user has it or not,
-        and enabled if he has it enabled, no matter whether org has it or not' do
+    before(:all) do
+      @config = Cartodb.config.deep_dup
+      CartoDB::Datasources::DatasourcesFactory.set_config(@config)
+    end
+
+    after(:all) do
+      CartoDB::Datasources::DatasourcesFactory.set_config(nil)
+    end
+
+    it 'is enabled if organization has it enabled and with custom config, no matter whether user has it or not,
+        and enabled if he has it enabled and with custom config, no matter whether org has it or not' do
+      twitter_search_conf = @config[:datasource_search]['twitter_search']
+      custom_wadus = {
+        "auth_required" => false,
+        "username" => "xx",
+        "password" => "xx",
+        "search_url" => "http://fake.url.nil",
+        "ratelimit_active" => false,
+        "ratelimit_concurrency" => 3,
+        "ratelimit_ttl" => 4,
+        "ratelimit_wait_secs" => 0.1
+      }
+      twitter_search_conf['customized']['custom_wadus'] = custom_wadus
+
+      twitter_search_conf['standard'] = custom_wadus
       @organization.twitter_datasource_enabled = false
       @organization.save.reload
+      @org_user_1.twitter_datasource_enabled = true
+      @org_user_1.save.reload
+      twitter_search_conf['customized_user_list'] = []
+      twitter_search_conf['customized_orgs_list'] = []
+      twitter_search_conf['entity_to_config_map'] = []
+      get_user_by_id(@org_user_1.id).twitter_datasource_enabled.should == false
+      twitter_search_conf['standard'] = {}
 
+      @organization.twitter_datasource_enabled = false
+      @organization.save.reload
       @org_user_1.twitter_datasource_enabled = false
       @org_user_1.save.reload
+      twitter_search_conf['customized_user_list'] = []
+      twitter_search_conf['customized_orgs_list'] = []
+      twitter_search_conf['entity_to_config_map'] = []
       get_user_by_id(@org_user_1.id).twitter_datasource_enabled.should == false
 
       @organization.twitter_datasource_enabled = true
       @organization.save.reload
-
+      @org_user_1.twitter_datasource_enabled = false
       @org_user_1.save.reload
-      get_user_by_id(@org_user_1.id).twitter_datasource_enabled.should == true
-
-      @org_user_1.twitter_datasource_enabled = true
-      @org_user_1.save.reload
+      twitter_search_conf['customized_user_list'] = []
+      twitter_search_conf['customized_orgs_list'] = [@organization.name]
+      twitter_search_conf['entity_to_config_map'] = [{ @organization.name => 'custom_wadus' }]
       get_user_by_id(@org_user_1.id).twitter_datasource_enabled.should == true
 
       @organization.twitter_datasource_enabled = false
       @organization.save.reload
-
       @org_user_1.twitter_datasource_enabled = true
       @org_user_1.save.reload
+      twitter_search_conf['customized_user_list'] = [@org_user_1.username]
+      twitter_search_conf['customized_orgs_list'] = []
+      twitter_search_conf['entity_to_config_map'] = [{ @org_user_1.username => 'custom_wadus' }]
       get_user_by_id(@org_user_1.id).twitter_datasource_enabled.should == true
     end
   end
@@ -948,6 +984,53 @@ shared_examples_for "user models" do
 
         @user.relevant_frontend_version.should eq 'user_frontend_version'
       end
+    end
+  end
+
+  describe '#valid_password?' do
+    before(:all) do
+      @user = create_user
+    end
+
+    after(:all) do
+      @user.destroy
+    end
+
+    it 'returns true if the password is valid' do
+      result = @user.valid_password?(:password, 'new_password', 'new_password')
+
+      result.should be_true
+    end
+
+    it 'returns false if the passwords do not match' do
+      result = @user.valid_password?(:password, 'new_password', 'other')
+
+      result.should be_false
+    end
+  end
+
+  describe '#valid_password_confirmation' do
+    before(:all) do
+      @user = create_user
+    end
+
+    after(:all) do
+      @user.destroy
+    end
+
+    it 'returns true if the password is valid' do
+      @user.password = 'new_password'
+      @user.save
+
+      result = @user.valid_password_confirmation('new_password')
+
+      result.should be_true
+    end
+
+    it 'returns false if the passwords is not correct' do
+      result = @user.valid_password_confirmation('wrong_pass')
+
+      result.should be_false
     end
   end
 end
